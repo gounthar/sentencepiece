@@ -1,0 +1,67 @@
+name: Build riscv64 wheel
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Upstream release tag to build from'
+        required: false
+        type: string
+  schedule:
+    - cron: '0 2 * * 0'
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, riscv64]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential pkg-config libprotobuf-dev protobuf-compiler
+
+      - name: Set up Python
+        run: |
+          python3 -m venv /tmp/build-venv
+          . /tmp/build-venv/bin/activate
+          pip install --upgrade pip setuptools wheel
+
+      - name: Build C++ library
+        run: |
+          mkdir -p build && cd build
+          cmake .. -DSPM_ENABLE_SHARED=OFF -DCMAKE_INSTALL_PREFIX=$(pwd)/root
+          make -j$(( $(nproc) / 2 ))
+          make install
+
+      - name: Build wheel
+        run: |
+          . /tmp/build-venv/bin/activate
+          cd python
+          pip wheel --no-deps --wheel-dir /tmp/wheels/ .
+
+      - name: Verify platform tag
+        run: |
+          for whl in /tmp/wheels/*.whl; do
+            if echo "$whl" | grep -q "linux_riscv64"; then
+              echo "OK: $whl"
+            else
+              echo "FAIL: $whl missing riscv64 tag"
+              exit 1
+            fi
+          done
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-riscv64
+          path: /tmp/wheels/*.whl
+          retention-days: 90
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf /tmp/build-venv /tmp/wheels
