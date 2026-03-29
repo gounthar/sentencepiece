@@ -12,7 +12,7 @@ on:
 
 jobs:
   build:
-    runs-on: [self-hosted, linux, riscv64]
+    runs-on: ubuntu-24.04-riscv
     timeout-minutes: 180
     steps:
       - name: Checkout
@@ -25,24 +25,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake build-essential pkg-config libprotobuf-dev protobuf-compiler
 
-      - name: Set up Python
-        run: |
-          python3 -m venv /tmp/build-venv
-          . /tmp/build-venv/bin/activate
-          pip install --upgrade pip setuptools wheel
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
 
       - name: Build C++ library
         run: |
           mkdir -p build && cd build
           cmake .. -DSPM_ENABLE_SHARED=OFF -DCMAKE_INSTALL_PREFIX=$(pwd)/root
-          make -j$(( $(nproc) / 2 ))
+          make -j$(nproc)
           make install
 
       - name: Build wheel
         run: |
-          . /tmp/build-venv/bin/activate
           cd python
-          pip wheel --no-deps --wheel-dir /tmp/wheels/ .
+          uvx --python 3.14 --with setuptools --with wheel pip wheel --no-deps --wheel-dir /tmp/wheels/ .
 
       - name: Verify platform tag
         run: |
@@ -64,11 +60,11 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf /tmp/build-venv /tmp/wheels
+        run: rm -rf /tmp/wheels
 
   release:
     needs: build
-    runs-on: [self-hosted, linux, riscv64]
+    runs-on: ubuntu-24.04-riscv
     if: success()
     env:
       GH_REPO: ${{ github.repository }}
@@ -87,7 +83,6 @@ jobs:
         run: |
           WHL=$(ls /tmp/wheels/*.whl | head -1)
           BASENAME=$(basename "$WHL")
-          # Extract version from wheel filename: name-version-cpXX-...
           VERSION=$(echo "$BASENAME" | sed 's/^[^-]*-\([^-]*\)-.*/\1/')
           echo "whl_path=$WHL" >> "$GITHUB_OUTPUT"
           echo "whl_name=$BASENAME" >> "$GITHUB_OUTPUT"
@@ -104,24 +99,19 @@ jobs:
         run: |
           TAG="riscv64-v${{ steps.wheel_info.outputs.version }}"
           TITLE="riscv64 wheel v${{ steps.wheel_info.outputs.version }}"
-
-          # Delete existing release with same tag if it exists
           gh release delete "$TAG" --yes 2>/dev/null || true
           git tag -d "$TAG" 2>/dev/null || true
           git push origin ":refs/tags/$TAG" 2>/dev/null || true
-
-          # Create new release
           gh release create "$TAG" \
             --title "$TITLE" \
-            --notes "Prebuilt riscv64 wheel for $(uname -m) Linux.
+            --notes "Prebuilt riscv64 wheel.
 
-          Built on: BananaPi F3 (SpacemiT K1, rv64imafdcv)
-          Python: $(python3 --version 2>&1)
+          Built on: RISE riscv64 runner (ubuntu-24.04-riscv)
           Wheel: ${{ steps.wheel_info.outputs.whl_name }}
 
           Install:
           \`\`\`
-          pip install sentencepiece --find-links https://github.com/gounthar/sentencepiece/releases/download/$TAG/
+          pip install sentencepiece --find-links https://github.com/${{ github.repository }}/releases/download/$TAG/
           \`\`\`" \
             /tmp/wheels/*.whl \
             /tmp/wheels/SHA256SUMS
@@ -129,16 +119,3 @@ jobs:
       - name: Cleanup
         if: always()
         run: rm -rf /tmp/wheels
-  notify-index:
-    needs: release
-    runs-on: ubuntu-latest
-    if: success()
-    steps:
-      - name: Trigger index update
-        env:
-          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
-        run: |
-          gh api repos/gounthar/riscv64-python-wheels/dispatches \
-            -f event_type=fork-release-published \
-            -f "client_payload[repo]=${{ github.repository }}" \
-            -f "client_payload[tag]=${{ github.ref_name }}"
