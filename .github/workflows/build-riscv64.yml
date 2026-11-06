@@ -14,26 +14,47 @@ jobs:
   build:
     runs-on: ubuntu-24.04-riscv
     timeout-minutes: 180
+    env:
+      # abseil >= 20260526.0 static_asserts std::atomic<uint8_t-enum> is lock free.
+      # GCC 13 (Ubuntu 24.04 default) does not inline sub-word atomics on riscv64,
+      # so the assert fails; GCC 14 does.
+      CC: gcc-14
+      CXX: g++-14
     steps:
+      - name: Resolve upstream tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo google/sentencepiece --json tagName --jq .tagName)
+          fi
+          echo "Building google/sentencepiece at $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # Tags live upstream and are not mirrored to this fork, so check out
+      # google/sentencepiece directly.
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          repository: google/sentencepiece
+          ref: ${{ steps.tag.outputs.tag }}
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential pkg-config libprotobuf-dev protobuf-compiler
+          sudo apt-get install -y cmake build-essential pkg-config gcc-14 g++-14
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
 
+      # Same script upstream's setup.py falls back to; builds into python/build.
       - name: Build C++ library
         run: |
-          mkdir -p build && cd build
-          cmake .. -DSPM_ENABLE_SHARED=OFF -DCMAKE_INSTALL_PREFIX=$(pwd)/root
-          make -j$(nproc)
-          make install
+          cd python
+          sh ./build_bundled.sh
 
       - name: Build wheels (cp310-cp314)
         run: |
